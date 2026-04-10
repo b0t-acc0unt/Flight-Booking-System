@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "flight.h"
 #include "structures.h"
@@ -112,7 +111,7 @@ void view_available_flights() {
 
     clear_screen();
     printf("--------------------------------------------------------------------------------\n");
-    printf("ID\tFLIGHT NO\tSOURCE\t\tDESTINATION\tDATE\t\tSEATS\tPRICE\n");
+    printf("%-5s %-12s %-15s %-15s %-12s %-8s %-8s\n", "ID", "FLIGHT NO", "SOURCE", "DESTINATION", "DATE", "SEATS", "PRICE");
     printf("--------------------------------------------------------------------------------\n");
 
     fp = fopen("flights.dat", "rb");
@@ -123,7 +122,7 @@ void view_available_flights() {
 
     while (fread(&f, sizeof(struct Flight), 1, fp) == 1) {
         if (f.is_deleted == 0 && f.available_seats > 0) {
-            printf("%d\t%s\t\t%s\t\t%s\t\t%s\t%d\t%.2f\n",
+            printf("%-5d %-12s %-15s %-15s %-12s %-8d %-8.2f\n",
                    f.flight_id, f.flight_num, f.source, f.dest, f.date, f.available_seats, f.price);
             count++;
         }
@@ -148,7 +147,7 @@ void view_all_flights() {
     clear_screen();
     printf("--- ALL FLIGHTS (ADMIN VIEW) ---\n");
     printf("--------------------------------------------------------------------------------\n");
-    printf("ID\tFLIGHT NO\tSOURCE\t\tDESTINATION\tSEATS\tSTATUS\n");
+    printf("%-5s %-12s %-15s %-15s %-8s %-10s\n", "ID", "FLIGHT NO", "SOURCE", "DESTINATION", "SEATS", "STATUS");
     printf("--------------------------------------------------------------------------------\n");
 
     fp = fopen("flights.dat", "rb");
@@ -167,7 +166,7 @@ void view_all_flights() {
             strcpy(status, "ACTIVE");
         }
 
-        printf("%d\t%s\t\t%s\t\t%s\t\t%d\t%s\n",
+        printf("%-5d %-12s %-15s %-15s %-8d %-10s\n",
                f.flight_id, f.flight_num, f.source, f.dest, f.available_seats, status);
         count++;
     }
@@ -236,3 +235,4 @@ void search_flight() {
     clear_buffer();
     getchar();
 }
+

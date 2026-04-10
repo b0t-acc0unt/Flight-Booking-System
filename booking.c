@@ -5,20 +5,75 @@
 #include "structures.h"
 #include "utils.h"
 
+#define PASSENGER_NAME_LEN 50
+#define BOOKING_ID_BASE 1000
+#define TEMP_BOOKINGS_FILE "bookings.tmp"
+
+static int read_positive_int(const char *prompt, int *value) {
+    while (1) {
+        printf("%s", prompt);
+        if (scanf("%d", value) != 1) {
+            clear_buffer();
+            printf("Invalid number. Please try again.\n");
+            continue;
+        }
+
+        if (*value <= 0) {
+            printf("Please enter a value greater than zero.\n");
+            continue;
+        }
+
+        clear_buffer();
+        return 1;
+    }
+}
+
+static int build_passenger_name(char *dest, size_t dest_len, const char *first_name, const char *last_name) {
+    int written = snprintf(dest, dest_len, "%s %s", first_name, last_name);
+    return written > 0 && written < (int)dest_len;
+}
+
+static int copy_bookings_to_temp(FILE *source, FILE *temp, int *max_id) {
+    struct Booking booking;
+
+    if (source == NULL) {
+        return 1;
+    }
+
+    while (fread(&booking, sizeof(struct Booking), 1, source) == 1) {
+        if (booking.booking_id > *max_id) {
+            *max_id = booking.booking_id;
+        }
+
+        if (fwrite(&booking, sizeof(struct Booking), 1, temp) != 1) {
+            return 0;
+        }
+    }
+
+    return ferror(source) == 0;
+}
+
 void book_flight() {
-    struct Booking b;
-    struct Booking temp_b;
     struct Flight f;
-    FILE *fp_flight;
-    FILE *fp_book;
+    struct Flight original_flight;
+    struct Booking *new_bookings = NULL;
+    FILE *fp_flight = NULL;
+    FILE *fp_book = NULL;
+    FILE *fp_temp = NULL;
     int target_flight_id;
+    int passenger_count;
     int flight_found = 0;
-    int max_id = 1000;
+    int max_id = BOOKING_ID_BASE;
+    int starting_seat;
+    int i;
+    long flight_record_pos = -1;
 
     clear_screen();
     printf("--- BOOK A FLIGHT ---\n");
-    printf("Enter Flight ID you want to book: ");
-    scanf("%d", &target_flight_id);
+
+    if (!read_positive_int("Enter Flight ID you want to book: ", &target_flight_id)) {
+        return;
+    }
 
     fp_flight = fopen("flights.dat", "rb+");
     if (fp_flight == NULL) {
@@ -29,59 +84,186 @@ void book_flight() {
     while (fread(&f, sizeof(struct Flight), 1, fp_flight) == 1) {
         if (f.flight_id == target_flight_id && f.is_deleted == 0) {
             flight_found = 1;
-
-            if (f.available_seats <= 0) {
-                printf("\nSorry! This flight is completely full.\n");
-                fclose(fp_flight);
-                printf("Press Enter to continue...\n");
-                clear_buffer();
-                getchar();
-                return;
-            }
-
-            f.available_seats = f.available_seats - 1;
-            b.seat_number = (f.total_seats - f.available_seats);
-
-            fseek(fp_flight, -sizeof(struct Flight), SEEK_CUR);
-            fwrite(&f, sizeof(struct Flight), 1, fp_flight);
             break;
         }
     }
-    fclose(fp_flight);
 
     if (flight_found == 0) {
         printf("\nError: Flight ID not found or removed.\n");
+        fclose(fp_flight);
         printf("Press Enter to continue...\n");
         clear_buffer();
         getchar();
         return;
     }
 
-    printf("Enter Passenger Name: ");
-    scanf(" %49[^\n]", b.passenger_name);
+    flight_record_pos = ftell(fp_flight) - (long)sizeof(struct Flight);
+    original_flight = f;
 
-    b.flight_id = target_flight_id;
-    b.is_cancelled = 0;
+    if (!read_positive_int("Enter number of passengers in this booking: ", &passenger_count)) {
+        fclose(fp_flight);
+        return;
+    }
+
+    if (passenger_count > f.available_seats) {
+        printf("\nSorry! Only %d seats are available on this flight.\n", f.available_seats);
+        fclose(fp_flight);
+        printf("Press Enter to continue...\n");
+        clear_buffer();
+        getchar();
+        return;
+    }
+
+    new_bookings = calloc((size_t)passenger_count, sizeof(*new_bookings));
+    if (new_bookings == NULL) {
+        printf("Error: Could not allocate memory for group booking.\n");
+        fclose(fp_flight);
+        printf("Press Enter to continue...\n");
+        clear_buffer();
+        getchar();
+        return;
+    }
+
+    starting_seat = (f.total_seats - f.available_seats) + 1;
+
+    for (i = 0; i < passenger_count; i++) {
+        char first_name[PASSENGER_NAME_LEN];
+        char last_name[PASSENGER_NAME_LEN];
+        char prompt[80];
+
+        while (1) {
+            snprintf(prompt, sizeof(prompt), "Passenger %d First Name: ", i + 1);
+            if (!read_valid_name(first_name, PASSENGER_NAME_LEN, prompt)) {
+                free(new_bookings);
+                fclose(fp_flight);
+                return;
+            }
+
+            snprintf(prompt, sizeof(prompt), "Passenger %d Last Name: ", i + 1);
+            if (!read_valid_name(last_name, PASSENGER_NAME_LEN, prompt)) {
+                free(new_bookings);
+                fclose(fp_flight);
+                return;
+            }
+
+            if (build_passenger_name(new_bookings[i].passenger_name, sizeof(new_bookings[i].passenger_name),
+                                     first_name, last_name)) {
+                break;
+            }
+
+            printf("Combined name is too long for the booking record. Please re-enter this passenger.\n");
+        }
+
+        new_bookings[i].flight_id = target_flight_id;
+        new_bookings[i].is_cancelled = 0;
+        new_bookings[i].seat_number = starting_seat + i;
+    }
+
+    f.available_seats = f.available_seats - passenger_count;
+    fseek(fp_flight, flight_record_pos, SEEK_SET);
+    if (fwrite(&f, sizeof(struct Flight), 1, fp_flight) != 1) {
+        printf("Error: Could not update flight seat count.\n");
+        free(new_bookings);
+        fclose(fp_flight);
+        printf("Press Enter to continue...\n");
+        clear_buffer();
+        getchar();
+        return;
+    }
+    fclose(fp_flight);
 
     fp_book = fopen("bookings.dat", "rb");
-    if (fp_book != NULL) {
-        while (fread(&temp_b, sizeof(struct Booking), 1, fp_book) == 1) {
-            if (temp_b.booking_id > max_id) {
-                max_id = temp_b.booking_id;
-            }
+    fp_temp = fopen(TEMP_BOOKINGS_FILE, "wb");
+    if (fp_temp == NULL) {
+        printf("Error: Could not prepare booking records.\n");
+        free(new_bookings);
+        printf("Press Enter to continue...\n");
+        clear_buffer();
+        getchar();
+        return;
+    }
+
+    if (!copy_bookings_to_temp(fp_book, fp_temp, &max_id)) {
+        printf("Error: Could not copy existing bookings.\n");
+        fclose(fp_temp);
+        if (fp_book != NULL) {
+            fclose(fp_book);
         }
+        remove(TEMP_BOOKINGS_FILE);
+
+        fp_flight = fopen("flights.dat", "rb+");
+        if (fp_flight != NULL) {
+            fseek(fp_flight, flight_record_pos, SEEK_SET);
+            fwrite(&original_flight, sizeof(struct Flight), 1, fp_flight);
+            fclose(fp_flight);
+        }
+
+        free(new_bookings);
+        printf("Press Enter to continue...\n");
+        clear_buffer();
+        getchar();
+        return;
+    }
+
+    if (fp_book != NULL) {
         fclose(fp_book);
     }
-    b.booking_id = max_id + 1;
 
-    fp_book = fopen("bookings.dat", "ab");
-    fwrite(&b, sizeof(struct Booking), 1, fp_book);
-    fclose(fp_book);
+    for (i = 0; i < passenger_count; i++) {
+        new_bookings[i].booking_id = ++max_id;
+        if (fwrite(&new_bookings[i], sizeof(struct Booking), 1, fp_temp) != 1) {
+            printf("Error: Could not save booking records.\n");
+            fclose(fp_temp);
+            remove(TEMP_BOOKINGS_FILE);
+
+            fp_flight = fopen("flights.dat", "rb+");
+            if (fp_flight != NULL) {
+                fseek(fp_flight, flight_record_pos, SEEK_SET);
+                fwrite(&original_flight, sizeof(struct Flight), 1, fp_flight);
+                fclose(fp_flight);
+            }
+
+            free(new_bookings);
+            printf("Press Enter to continue...\n");
+            clear_buffer();
+            getchar();
+            return;
+        }
+    }
+
+    fclose(fp_temp);
+    fp_temp = NULL;
+
+    if (rename(TEMP_BOOKINGS_FILE, "bookings.dat") != 0) {
+        printf("Error: Could not finalize booking records.\n");
+        remove(TEMP_BOOKINGS_FILE);
+
+        fp_flight = fopen("flights.dat", "rb+");
+        if (fp_flight != NULL) {
+            fseek(fp_flight, flight_record_pos, SEEK_SET);
+            fwrite(&original_flight, sizeof(struct Flight), 1, fp_flight);
+            fclose(fp_flight);
+        }
+
+        free(new_bookings);
+        printf("Press Enter to continue...\n");
+        clear_buffer();
+        getchar();
+        return;
+    }
 
     printf("\nBooking Successful!\n");
-    printf("Your Booking ID is: %d\n", b.booking_id);
-    printf("Your Seat Number is: %d\n", b.seat_number);
+    printf("Flight ID: %d\n", target_flight_id);
+    printf("Passengers Booked: %d\n", passenger_count);
+    for (i = 0; i < passenger_count; i++) {
+        printf("Passenger %d: %s | Booking ID: %d | Seat Number: %d\n",
+               i + 1,
+               new_bookings[i].passenger_name,
+               new_bookings[i].booking_id,
+               new_bookings[i].seat_number);
+    }
 
+    free(new_bookings);
     printf("Press Enter to continue...\n");
     clear_buffer();
     getchar();
